@@ -1,0 +1,114 @@
+case_id,category,symptom,topology_note,show_output,expected_fault,osi_layer,concept_tag,severity
+V1,VLAN,"PC1 in VLAN 10 cannot ping PC2, also supposed to be in VLAN 10, but both get valid IPs from DHCP.","Both PCs connect to SW1, access ports Fa0/2 and Fa0/4.","SW1#show vlan brief
+VLAN Name        Status   Ports
+10   Sales       active   Fa0/2
+20   Engineering active   Fa0/4, Fa0/5",Fa0/4 was assigned to VLAN 20 instead of VLAN 10 - PCs are on different VLANs despite same subnet config.,Layer 2,VLAN misassignment,Medium
+V2,VLAN,"PCs on VLAN 30 cannot reach the file server on VLAN 30, but ping their own default gateway fine.",SW1 trunk to SW2 carries traffic to distribution switch; server sits on SW2.,"SW1#show interfaces trunk
+Port     Mode   Encapsulation  Status       Native vlan
+Gi0/1    on     802.1q         trunking     1
+
+Vlans allowed and active in management domain
+Port     Vlans allowed
+Gi0/1    1,10,20","VLAN 30 is not permitted on the trunk link (allowed list only has 1,10,20), so VLAN 30 traffic is dropped between switches.",Layer 2,Trunk VLAN pruning,High
+V3,VLAN,New PC plugged into Fa0/6 gets no DHCP address at all.,Fa0/6 should be an access port on VLAN 10 like the rest of the sales floor.,"SW1#show interfaces Fa0/6 switchport
+Name: Fa0/6
+Administrative Mode: dynamic auto
+Operational Mode: down
+Access Mode VLAN: 1 (default)","Port is still on default VLAN 1 and never manually configured for VLAN 10, so it's not reaching the correct DHCP scope.",Layer 2,Unconfigured access port,Low
+V5,VLAN,Two PCs in the same VLAN can't ping each other even though switchport shows correct VLAN.,"Both connect through the same switch, different ports.","SW1#show mac address-table | include 000C
+  10   000C.29F1.22A1  DYNAMIC  Fa0/2
+  10   000C.29F1.22A1  DYNAMIC  Fa0/4",Duplicate MAC address appearing on two ports (likely a cloned VM NIC or spoofing) causing MAC flapping.,Layer 2,MAC address flapping,Medium
+G1,Gateway,PC has a valid IP but cannot ping its own default gateway.,"PC1 on 192.168.10.0/24, gateway is router sub-interface.","PC1> ipconfig
+IP: 192.168.10.50  Mask: 255.255.255.0  Gateway: 192.168.10.1
+
+R1#show ip interface brief
+GigabitEthernet0/0.10   192.168.20.1   up   up",Gateway configured on the router (192.168.20.1) doesn't match the subnet the PC expects (192.168.10.x).,Layer 3,Gateway/subnet mismatch,High
+G2,Gateway,PC can ping default gateway but nothing beyond it.,R1 connects to ISP router via Gi0/1.,"R1#show ip interface brief
+GigabitEthernet0/1   203.0.113.2   administratively down   down",Uplink interface is administratively shut down.,Layer 1/2,Interface shutdown,High
+G4,Gateway,"Gateway ping works intermittently, sometimes times out.",PC connected via a long Cat5 run to closet switch.,"SW1#show interfaces Fa0/8
+Fa0/8 is up, line protocol is up (looped back)
+  5000 input errors, 3000 CRC, 0 collisions",High CRC/input errors indicate a bad cable or duplex mismatch causing intermittent packet loss.,Layer 1,Physical layer errors / duplex mismatch,Medium
+G5,Gateway,New VLAN's PCs can't reach their gateway even though the SVI is configured.,Router-on-a-stick setup with sub-interfaces.,"R1#show ip interface brief
+GigabitEthernet0/0.30   192.168.30.1   up   down","Sub-interface protocol is down - likely missing 'encapsulation dot1Q 30' command, so it can't process tagged frames.",Layer 2,Missing dot1Q encapsulation,High
+D1,DHCP,Several PCs on VLAN 10 get 169.254.x.x addresses (APIPA).,DHCP server is a Cisco router with 'ip dhcp pool SALES'.,"R1#show ip dhcp pool SALES
+Pool SALES:
+ Utilization mark (high/low)    : 100 / 0
+ Total addresses                : 10
+ Leased addresses               : 10","DHCP scope for VLAN 10 is exhausted (all 10 addresses leased out), so new clients fail to get an IP.",Layer 3,DHCP scope exhaustion,High
+D2,DHCP,PCs on VLAN 20 (a different subnet than the router) get no DHCP address at all.,DHCP server lives centrally on R1; VLAN 20 clients are behind SW2 with an SVI on a different router.,"R2#show run interface vlan20
+interface Vlan20
+ ip address 192.168.20.1 255.255.255.0
+! no ip helper-address configured","Missing 'ip helper-address' on the VLAN 20 SVI, so DHCP broadcast requests never reach the remote DHCP server.",Layer 3,Missing DHCP relay (ip helper-address),High
+D4,DHCP,"Two PCs on the same VLAN end up with identical IP addresses, causing intermittent connectivity for both.",One PC has a static IP configured inside the DHCP pool's range.,"R1#show ip dhcp conflict
+IP address       Detection method   Detection time
+192.168.10.55    Ping               10:15 UTC","A statically assigned PC is using an address inside the active DHCP pool range, causing an IP conflict.",Layer 3,Static/DHCP IP conflict,Medium
+D5,DHCP,All DHCP requests on VLAN 10 fail after a config change on the switch.,SW1 recently had DHCP snooping enabled for security.,"SW1#show ip dhcp snooping
+Switch DHCP snooping is enabled
+Interface       Trusted
+Gi0/1           no","Uplink port toward the DHCP server is not marked as a trusted port under DHCP snooping, so legitimate server replies are being dropped.",Layer 2,DHCP snooping trust misconfiguration,High
+N1,DNS,PC can ping the web server's IP directly but browsing by hostname fails.,PC uses DHCP-assigned DNS server.,"PC1> ipconfig /all
+DNS Servers: 192.168.100.53
+
+PC1> ping 192.168.100.53
+Request timed out.",Configured DNS server is unreachable - likely wrong DNS IP handed out by DHCP or DNS server is down.,Layer 7,Unreachable DNS server,Medium
+N2,DNS,"Internal hostnames resolve fine, but external websites don't.",Internal DNS server forwards unknown queries upstream.,"DNS1#show run | include forwarder
+! no forwarder configured","Internal DNS server has no forwarder set for external queries, so it can't resolve anything outside its own zone.",Layer 7,Missing DNS forwarder,Medium
+N4,DNS,"All name resolution fails network-wide, users report 'server not found' for everything.",DNS server VM is hosted on VLAN 100.,"R1#show ip interface brief
+Vlan100   192.168.100.1   up   up
+
+PC1> ping 192.168.100.53
+Reply from 192.168.100.1: Destination host unreachable",DNS server itself is powered off or its NIC is down - no route exists to reach it even though the gateway is fine.,Layer 3,DNS server host down,High
+N6,DNS,DNS resolution works from PCs but fails from a specific VLAN (Guest).,ACL was recently applied restricting Guest VLAN traffic.,"R1#show access-lists GUEST_ACL
+10 deny udp 192.168.40.0 0.0.0.255 any eq 53
+20 permit ip any any",ACL explicitly blocks UDP port 53 (DNS) from the Guest subnet.,Layer 4,ACL blocking DNS port,Medium
+R1,Routing,PCs on VLAN 10 can reach VLAN 20 but not the remote branch office subnet.,R1 connects to branch via a WAN link using OSPF.,"R1#show ip route
+O    10.20.0.0/24 [110/20] via 172.16.0.2, 00:00:12, Serial0/0/0
+! Expected route to 10.30.0.0/24 (branch) missing",No route to the branch subnet (10.30.0.0/24) - likely OSPF neighbor down or network statement missing on branch router.,Layer 3,Missing routing entry,High
+R2,Routing,Inter-VLAN routing stopped working after router reload.,Router-on-a-stick with sub-interfaces for VLAN 10/20/30.,"R1#show run | include interface
+interface GigabitEthernet0/0
+interface GigabitEthernet0/0.10
+interface GigabitEthernet0/0.20
+! sub-interface for VLAN 30 missing after reload - config not saved","Running-config was never saved to startup-config, so the VLAN 30 sub-interface was lost on reload.",Layer 3,Unsaved configuration,High
+R3,Routing,"Static route to a remote subnet was added, but traffic still fails.",Admin added 'ip route 10.40.0.0 255.255.255.0 10.1.1.2'.,"R1#show ip route static
+S    10.40.0.0/24 [1/0] via 10.1.1.2
+
+R1#ping 10.1.1.2
+Success rate is 0 percent",Static route points to a next-hop IP that is itself unreachable - likely wrong next-hop or that interface is down.,Layer 3,Bad static route next-hop,High
+R5,Routing,"Traffic to the internet works, but return traffic never arrives back at internal PCs.",Asymmetric routing suspected - two WAN links to different ISPs.,"R1#show ip route 0.0.0.0
+S*   0.0.0.0/0 [1/0] via 203.0.113.1
+! But NAT is applied on the other interface toward 198.51.100.1","Default route and NAT outside interface don't match - traffic goes out one ISP link but NAT/PAT is configured for the other, causing asymmetric routing.",Layer 3,Asymmetric routing / NAT interface mismatch,High
+A1,ACL,PC in VLAN 10 can ping the server but cannot open a web page hosted on it.,ACL applied on R1's inbound interface for VLAN 10.,"R1#show access-lists 101
+10 permit icmp any any
+20 deny tcp any any eq 80
+30 permit ip any any","ACL explicitly denies TCP port 80 (HTTP) while allowing ICMP, explaining why ping works but web browsing doesn't.",Layer 4,ACL blocking specific port,Medium
+A2,ACL,"After applying a new ACL, ALL traffic from VLAN 20 stopped, including traffic that should be allowed.",ACL was applied to interface but has no explicit permit statements besides one line.,"R1#show access-lists 102
+10 permit tcp 192.168.20.0 0.0.0.255 any eq 443
+! No other permit lines - implicit deny any any",Missing explicit 'permit ip any any' (or similar) at the end - the implicit deny-all at the end of every ACL is blocking everything else.,Layer 3/4,Implicit deny at end of ACL,High
+A3,ACL,ACL meant to block one specific host is blocking the whole subnet instead.,Admin intended to block only 192.168.10.50.,"R1#show access-lists 103
+10 deny ip 192.168.10.0 0.0.0.255 any
+20 permit ip any any",Wildcard mask used denies the entire /24 subnet (0.0.0.255) instead of a single host (should be 0.0.0.0 for a host statement).,Layer 3,Incorrect wildcard mask,High
+A4,ACL,ACL was configured correctly but has no effect on traffic at all.,ACL 104 written and verified in running-config.,"R1#show ip interface Gi0/1 | include access list
+  Outgoing access list is not set
+  Inbound  access list is not set",The ACL exists in config but was never actually applied to an interface with 'ip access-group'.,Layer 3,ACL not applied to interface,Medium
+T1,NAT,Internal PCs cannot reach the internet even though the default route is correct.,R1 configured with NAT overload (PAT) toward ISP.,"R1#show ip nat statistics
+Total active translations: 0
+Outside interfaces: (none)
+Inside interfaces: GigabitEthernet0/0","No outside interface has been marked with 'ip nat outside', so NAT never triggers even though inside is configured.",Layer 3,Missing NAT outside interface,High
+T2,NAT,"Some internal PCs can reach the internet, others (same subnet) can't.",NAT pool has limited addresses.,"R1#show ip nat translations
+! Pool exhausted - 20/20 addresses in use
+
+R1#show ip nat statistics
+Pool NATPOOL: netmask 255.255.255.248
+ start 203.0.113.10 end 203.0.113.13
+ total addresses 4, allocated 4 (100%), misses 15","NAT pool is too small (only 4 public addresses) for the number of simultaneous internal users, causing PAT/pool exhaustion.",Layer 3,NAT pool exhaustion,High
+T3,NAT,Web server behind NAT is unreachable from outside despite port forwarding being configured.,Static NAT/PAT rule for port 80 forwarding to internal server.,"R1#show run | include ip nat inside source static
+ip nat inside source static tcp 192.168.10.100 8080 203.0.113.5 80 extendable
+! Server actually listens on port 80, not 8080","Port forward maps to internal port 8080 but the web server actually listens on port 80, mismatching the internal port.",Layer 4,NAT port mismatch,Medium
+W1,Wireless,Guest Wi-Fi devices can reach the internet but can also reach internal file servers (should be isolated).,"Guest SSID mapped to VLAN 40, internal servers on VLAN 10.","R1#show access-lists GUEST_ISOLATION
+! ACL exists but not applied to Vlan40 interface","Guest isolation ACL was created but never applied to the Guest VLAN interface - a security issue, not just connectivity.",Layer 3,Missing guest isolation ACL application,High (Security)
+W2,Wireless,Wireless clients connect to the SSID but never get an IP address.,WLC bridges wireless VLAN 50 to wired network via trunk to core switch.,"CoreSW#show interfaces trunk
+Port     Vlans allowed
+Gi0/2    1,10,20,30
+! VLAN 50 missing from allowed list","VLAN 50 (wireless) is not permitted on the trunk between WLC and core switch, so DHCP/data never reaches wireless clients.",Layer 2,Trunk VLAN pruning (wireless),High
+W4,Wireless,"Wireless clients can't authenticate to the SSID at all, get 'incorrect password' even with correct credentials.",WPA2-Enterprise with RADIUS authentication.,"WLC#show radius statistics
+Server 192.168.100.10: Requests 50, Timeouts 50, Responses 0","RADIUS server is unreachable or down, so no authentication requests are ever being answered.",Layer 7,RADIUS server unreachable,High
